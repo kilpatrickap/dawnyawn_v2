@@ -1,4 +1,4 @@
-# dawnyawn/agent/task_manager.py (Final Version)
+# dawnyawn/agent/task_manager.py (Final Version with Enumerated Plan)
 import os
 import json
 import logging
@@ -34,7 +34,6 @@ class TaskManager:
         # Ensure the Projects directory exists
         os.makedirs(PROJECTS_DIR, exist_ok=True)
 
-    # --- NEW METHOD to handle starting or resuming ---
     def initialize_mission(self):
         """Asks user whether to resume an old mission or start a new one."""
         if os.path.exists(SESSION_FILE):
@@ -44,7 +43,6 @@ class TaskManager:
                 logging.info("Previous session file deleted. Starting a fresh mission.")
             else:
                 logging.info("Resuming previous mission.")
-        # If the file doesn't exist, it will start fresh by default.
 
     def _save_state(self):
         """Saves the current mission goal, plan, and history to a session file."""
@@ -70,7 +68,6 @@ class TaskManager:
             if state.get("goal") != self.goal:
                 logging.warning("Session file goal '%s' does not match current goal '%s'. Starting fresh.",
                                 state.get("goal"), self.goal)
-                # Delete the old file since it's for a different goal
                 os.remove(SESSION_FILE)
                 return False
 
@@ -94,8 +91,9 @@ class TaskManager:
                     return
 
                 logging.info("High-Level Plan Created:")
+                # --- THE FIX: Enumerate the plan using the task_id ---
                 for task in self.plan:
-                    logging.info("  - %s", task.description)
+                    logging.info("  %d. %s", task.task_id, task.description)
 
                 if input("\nProceed with this plan? (y/n): ").lower() != 'y':
                     logging.info("Mission aborted by user.")
