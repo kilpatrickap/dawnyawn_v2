@@ -1,6 +1,7 @@
-# dawnyawn/agent/thought_engine.py (Final, Complete Version)
+# dawnyawn/agent/thought_engine.py (Final Merged Prompt Version)
 import re
-import json  # <-- Import the json library
+import json
+import logging
 from pydantic import BaseModel
 from pydantic_core import ValidationError
 from config import get_llm_client, LLM_MODEL_NAME, LLM_REQUEST_TIMEOUT
@@ -28,48 +29,45 @@ class ThoughtEngine:
     def __init__(self, tool_manager: ToolManager):
         self.client = get_llm_client()
         self.tool_manager = tool_manager
-        # The system prompt is now generated dynamically in choose_next_action
+        # --- FINAL, HIGHLY CONSTRAINED SYSTEM PROMPT ---
         self.system_prompt_template = f"""
-You are an expert penetration tester AI. Your job is to select the next command to execute to achieve the user's goal.
+You are an expert penetration tester and command-line AI. Your SOLE function is to output a single, valid JSON object that represents the next best command to execute.
 
-**CRUCIAL ANALYSIS INSTRUCTIONS:**
-1.  **Analyze the Entire History:** Carefully review all previous actions and their observations.
-2.  **Learn from Failures:** If a previous step has a status of `FAILURE`, you MUST analyze the `full_output` to understand why. Do not repeat failed commands. If a tool is "not found", do not try to use it again.
-3.  **Extract Valuable Data:** Even in a `FAILURE` observation (e.g., due to a timeout), the `full_output` may contain critical information like open ports or vulnerabilities. Use this partial data to inform your next step.
-4.  **Be Efficient:** Do not run the same scan twice. Use the information you already have.
-5.  **Use Real Commands:** Only generate valid, real-world shell commands. Do not invent `nmap` scripts or options.
-6.  **Goal Completion:** When you have gathered enough information to produce the final report described in the goal, you MUST use the `finish_mission` tool.
+I. RESPONSE FORMATTING RULES (MANDATORY)
+1.  **JSON ONLY:** Your entire response MUST be a single JSON object. Do not add explanations, markdown, conversational text, or anything else.
+2.  **CORRECT SCHEMA:** The JSON object MUST have exactly two keys: `"tool_name"` and `"tool_input"`.
+3.  **STRING INPUT:** The value for `"tool_input"` MUST be a single string. It ABSOLUTELY CANNOT be a list or an object.
+4.  **VALID COMMAND SYNTAX:** The `"tool_input"` string must be a valid, executable shell command. Pay close attention to syntax. Use spaces to separate arguments, not commas.
+    - **CORRECT EXAMPLE:** `ping -c 4 google.com`
+    - **INCORRECT EXAMPLE:** `ping,google.com`
 
-**Your Response:**
-Your response MUST be a JSON object with EXACTLY TWO keys: "tool_name" and "tool_input".
+II. STRATEGIC ANALYSIS RULES (HOW TO THINK)
+1.  **Analyze History:** Carefully review the entire execution history. Learn from previous command outputs, both successes and failures.
+2.  **Learn from Failures:** If a command failed (e.g., with 'command not found' or an error message), you MUST NOT repeat the same mistake. Choose a different command or tool.
+3.  **Be Efficient:** Do not run the same command twice if it has already succeeded. Use the information you have.
+4.  **Goal Completion:** When you have gathered enough information to fully answer the user's goal, you MUST use the `finish_mission` tool. Provide a comprehensive summary in the `tool_input`.
 
-**Available Tools:**
+III. AVAILABLE TOOLS:
 {self.tool_manager.get_tool_manifest()}
 """
 
     def choose_next_action(self, goal: str, plan: List[TaskNode], history: List[Dict]) -> ToolSelection:
-        print(f"\n🤔 Thinking about the next step...")
+        logging.info("🤔 Thinking about the next step...")
 
-        # Format the plan and history for the prompt
         formatted_plan = "\n".join([f"  - {step.description}" for step in plan])
-
         formatted_history = "No actions taken yet."
         if history:
-            # We now use json.dumps to format the observation cleanly and robustly
             formatted_history = ""
             for i, item in enumerate(history):
-                # Use .get() for safety in case a key is missing
                 command = item.get('command', 'N/A')
-                observation = item.get('observation', {})
-                # Pretty-print the observation JSON for the LLM
-                obs_str = json.dumps(observation, indent=2)
-                formatted_history += f"Action {i + 1}:\n  - Command: `{command}`\n  - Observation:\n{obs_str}\n"
+                obs_str = str(item.get('observation', ''))
+                formatted_history += f"Action {i + 1}:\n  - Command: `{command}`\n  - Observation:\n```\n{obs_str}\n```\n"
 
         user_prompt = (
-            f"Main Goal: {goal}\n\n"
-            f"Strategic Plan:\n{formatted_plan}\n\n"
-            f"Execution History:\n{formatted_history}\n\n"
-            "Based on all the information above, what is your single best command for your next action? Respond with a JSON object."
+            f"Based on the goal, plan, and history below, what is the next command to execute? Remember your critical rules: respond with a single, valid JSON object and nothing else.\n\n"
+            f"**Main Goal:** {goal}\n\n"
+            f"**Strategic Plan:**\n{formatted_plan}\n\n"
+            f"**Execution History:**\n{formatted_history}"
         )
 
         try:
@@ -79,23 +77,22 @@ Your response MUST be a JSON object with EXACTLY TWO keys: "tool_name" and "tool
                     {"role": "system", "content": self.system_prompt_template},
                     {"role": "user", "content": user_prompt}
                 ],
-                timeout=LLM_REQUEST_TIMEOUT
+                timeout=LLM_REQUEST_TIMEOUT,
+                response_format={"type": "json_object"}
             )
             raw_response = response.choices[0].message.content
-            cleaned_response = _clean_json_response(raw_response)
 
+            cleaned_response = _clean_json_response(raw_response)
             selection = ToolSelection.model_validate_json(cleaned_response)
-            print(f"  > AI's Next Action: {selection.tool_input}")
+            logging.info("AI's Next Action: %s", selection.tool_input)
             return selection
 
-        except (ValidationError) as e:
-            print(f"\n❌ Critical Error during thought process: {type(e).__name__}")
-            # Check if raw_response is available to show what the model sent
+        except (ValidationError, json.JSONDecodeError) as e:
+            logging.error("Critical Error during thought process: %s", type(e).__name__)
             try:
-                print(f"   Model's raw response: \"{raw_response}\"")
+                logging.error("Model's malformed response: %s", raw_response)
             except NameError:
-                print("   Model did not provide a response before the error occurred.")
+                logging.error("Model did not provide a response before the error occurred.")
 
-            # Return a special action that signals failure, allowing the loop to terminate gracefully
             return ToolSelection(tool_name="finish_mission",
-                                 tool_input="Mission failed: The AI could not decide on a valid next action.")
+                                 tool_input="Mission failed: The AI produced an invalid JSON response and could not decide on a next action.")
