@@ -1,10 +1,9 @@
-# dawnyawn/agent/task_manager.py (Corrected for Circular Import)
+# dawnyawn/agent/task_manager.py (Final Version)
 import os
 import json
 import logging
 from openai import APITimeoutError
 from models.task_node import TaskNode
-# Keep this import at the top as it's unlikely to cause a cycle
 from reporting.report_generator import create_report
 
 # --- Constants ---
@@ -27,13 +26,25 @@ class TaskManager:
         self.plan: list[TaskNode] = []
         self.mission_history = []
 
-        # Now, initialize the components
+        # Initialize the components
         self.scheduler = AgentScheduler()
         self.thought_engine = ThoughtEngine(ToolManager())
         self.mcp_client = McpClient()
 
-        # Ensure the Projects directory exists for outputs and sessions
+        # Ensure the Projects directory exists
         os.makedirs(PROJECTS_DIR, exist_ok=True)
+
+    # --- NEW METHOD to handle starting or resuming ---
+    def initialize_mission(self):
+        """Asks user whether to resume an old mission or start a new one."""
+        if os.path.exists(SESSION_FILE):
+            resume = input("\nAn existing session file was found. Do you want to resume the mission? (y/n): ").lower()
+            if resume != 'y':
+                os.remove(SESSION_FILE)
+                logging.info("Previous session file deleted. Starting a fresh mission.")
+            else:
+                logging.info("Resuming previous mission.")
+        # If the file doesn't exist, it will start fresh by default.
 
     def _save_state(self):
         """Saves the current mission goal, plan, and history to a session file."""
@@ -59,6 +70,8 @@ class TaskManager:
             if state.get("goal") != self.goal:
                 logging.warning("Session file goal '%s' does not match current goal '%s'. Starting fresh.",
                                 state.get("goal"), self.goal)
+                # Delete the old file since it's for a different goal
+                os.remove(SESSION_FILE)
                 return False
 
             self.plan = [TaskNode(**task_data) for task_data in state.get("plan", [])]

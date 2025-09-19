@@ -1,4 +1,4 @@
-# kali_execution_server/kali_driver/driver.py (Corrected for Timeout)
+# kali_execution_server/kali_driver/driver.py (Final Logic Fix)
 import os
 import time
 import docker
@@ -54,21 +54,18 @@ class KaliContainer:
             key_filename=key_path, timeout=30
         )
 
-    # --- THE FIX: Add the 'timeout' parameter with a default value ---
-    def send_command_and_get_output(self, command: str, timeout: int = 1800) -> str:
+    # --- THE FIX: This method NO LONGER returns output. It just executes. ---
+    def send_command_and_get_output(self, command: str, timeout: int = 1800):
         self._ensure_connected()
         print(f"  [+] Sending command: '{command}'")
-        # --- THE FIX: Pass the 'timeout' value to the underlying SSH command ---
         stdin, stdout, stderr = self._ssh_client.exec_command(command, timeout=timeout)
-        output = stdout.read().decode('utf-8', errors='ignore').strip()
-        error_output = stderr.read().decode('utf-8', errors='ignore').strip()
-        if error_output:
-            output += "\n--- STDERR ---\n" + error_output
-        if not output:
-            print("\n--- ⚠️ EXECUTION WARNING: EMPTY RESULT ---")
-        return output
 
-    # --- NEW METHOD: Implement file copying ---
+        # --- THE FIX: We now wait for the command to complete by checking the exit status. ---
+        # This is crucial because it blocks until the command is finished.
+        exit_status = stdout.channel.recv_exit_status()
+        print(f"  [+] Command finished with exit status: {exit_status}")
+        # We no longer read stdout/stderr here, as it's all in the file.
+
     def copy_file_from_container(self, path: str) -> str:
         """Copies a file from the container and returns its content as a string."""
         try:
@@ -79,12 +76,15 @@ class KaliContainer:
                     f.write(chunk)
                 f.seek(0)
                 with tarfile.open(fileobj=f) as tar:
-                    # Assuming the tar contains only the file we asked for
                     member = tar.getmembers()[0]
                     extracted_file = tar.extractfile(member)
                     return extracted_file.read().decode('utf-8', errors='ignore')
         except docker.errors.NotFound:
-            raise FileNotFoundError(f"File '{path}' not found inside the container.")
+            # If the command produced no output file, return a string indicating that.
+            return f"Command produced no output file at '{path}'."
+        except IndexError:
+            # If the tarball is empty, it means the file was not created.
+            return f"Command produced no output file at '{path}'."
 
     def destroy(self):
         if self._ssh_client:

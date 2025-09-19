@@ -1,4 +1,4 @@
-# dawnyawn/agent/thought_engine.py (Final Merged Prompt Version)
+# dawnyawn/agent/thought_engine.py (Final Version with Temperature Control)
 import re
 import json
 import logging
@@ -78,7 +78,9 @@ III. AVAILABLE TOOLS:
                     {"role": "user", "content": user_prompt}
                 ],
                 timeout=LLM_REQUEST_TIMEOUT,
-                response_format={"type": "json_object"}
+                response_format={"type": "json_object"},
+                # --- THE FIX: Add temperature for more deterministic, rule-following behavior ---
+                temperature=0.2
             )
             raw_response = response.choices[0].message.content
 
