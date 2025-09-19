@@ -1,8 +1,10 @@
-# kali_execution_server/kali_driver/driver.py (Corrected Version)
+# kali_execution_server/kali_driver/driver.py (Corrected for Timeout)
 import os
 import time
 import docker
 import paramiko
+import tarfile
+from io import BytesIO
 
 
 class KaliContainer:
@@ -18,13 +20,10 @@ class KaliContainer:
             detach=True
         )
 
-        # --- THE FIX: Expose the container's ID as a public attribute ---
         self.id = self._container.id
-        # Also exposing short_id for consistency
         self.short_id = self._container.short_id
 
         self._ensure_started()
-        # Using the new public attribute for consistency
         print(f"  [+] Container '{self.short_id}' created and running.")
 
     def _ensure_started(self):
@@ -55,10 +54,12 @@ class KaliContainer:
             key_filename=key_path, timeout=30
         )
 
-    def send_command_and_get_output(self, command: str) -> str:
+    # --- THE FIX: Add the 'timeout' parameter with a default value ---
+    def send_command_and_get_output(self, command: str, timeout: int = 1800) -> str:
         self._ensure_connected()
         print(f"  [+] Sending command: '{command}'")
-        stdin, stdout, stderr = self._ssh_client.exec_command(command, timeout=1800)
+        # --- THE FIX: Pass the 'timeout' value to the underlying SSH command ---
+        stdin, stdout, stderr = self._ssh_client.exec_command(command, timeout=timeout)
         output = stdout.read().decode('utf-8', errors='ignore').strip()
         error_output = stderr.read().decode('utf-8', errors='ignore').strip()
         if error_output:
@@ -67,12 +68,29 @@ class KaliContainer:
             print("\n--- ⚠️ EXECUTION WARNING: EMPTY RESULT ---")
         return output
 
+    # --- NEW METHOD: Implement file copying ---
+    def copy_file_from_container(self, path: str) -> str:
+        """Copies a file from the container and returns its content as a string."""
+        try:
+            bits, stat = self._container.get_archive(path)
+
+            with BytesIO() as f:
+                for chunk in bits:
+                    f.write(chunk)
+                f.seek(0)
+                with tarfile.open(fileobj=f) as tar:
+                    # Assuming the tar contains only the file we asked for
+                    member = tar.getmembers()[0]
+                    extracted_file = tar.extractfile(member)
+                    return extracted_file.read().decode('utf-8', errors='ignore')
+        except docker.errors.NotFound:
+            raise FileNotFoundError(f"File '{path}' not found inside the container.")
+
     def destroy(self):
         if self._ssh_client:
             self._ssh_client.close()
         try:
             self._container.reload()
-            # Using the new public attribute
             print(f"\n  [+] Cleaning up container '{self.short_id}'...")
             if self._container.status in ["running", "created"]:
                 self._container.stop()
