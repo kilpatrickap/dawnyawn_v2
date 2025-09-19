@@ -1,4 +1,4 @@
-# kali_execution_server/kali_server.py (Corrected for AttributeError)
+# kali_execution_server/kali_server.py (Final Corrected Version)
 import uvicorn
 import uuid
 import os
@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from kali_driver.driver import KaliManager, KaliContainer
 
 
-# --- Pydantic Models for the new stateless endpoint ---
+# --- Pydantic Models ---
 class ExecuteRequest(BaseModel):
     command: str
 
@@ -35,7 +35,7 @@ def execute_command(request: ExecuteRequest):
     Creates a new container, runs a single command, extracts the output
     to a file, and destroys the container.
     """
-    container = None
+    container: KaliContainer = None
     command = request.command
 
     sanitized_command = "".join(c for c in command if c.isalnum() or c in (' ', '_', '-')).rstrip()
@@ -46,12 +46,14 @@ def execute_command(request: ExecuteRequest):
     logging.info("--- [EXECUTE] New request for command: '%s' ---", command)
     try:
         container = kali_manager.create_container()
-        # --- FIX: Access the id via the underlying 'container' attribute ---
-        logging.info("Created temporary container: %s", container.container.id[:12])
+        # --- FINAL FIX: Use the simple '.id' attribute we added to the KaliContainer class ---
+        logging.info("Created temporary container: %s", container.id[:12])
 
         full_command_with_redirect = f"{command} > {output_filepath_in_container} 2>&1"
         container.send_command_and_get_output(full_command_with_redirect, timeout=1800)
 
+        # NOTE: This assumes you have a 'copy_file_from_container' method in your driver.
+        # If not, that will be the next error we need to implement.
         file_content = container.copy_file_from_container(output_filepath_in_container)
 
         logging.info("--- ✅ Command executed, result captured in '%s' ---", output_filename)
@@ -62,8 +64,8 @@ def execute_command(request: ExecuteRequest):
         raise HTTPException(status_code=500, detail=f"Command execution failed on server: {e}")
     finally:
         if container:
-            # --- FIX: Access the id via the underlying 'container' attribute ---
-            logging.info("--- [CLEANUP] Destroying container %s ---", container.container.id[:12])
+            # --- FINAL FIX: Use the simple '.id' attribute ---
+            logging.info("--- [CLEANUP] Destroying container %s ---", container.id[:12])
             container.destroy()
 
 

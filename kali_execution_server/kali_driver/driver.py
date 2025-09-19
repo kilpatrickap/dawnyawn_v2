@@ -1,11 +1,9 @@
-# kali_execution_server/kali_driver/driver.py
+# kali_execution_server/kali_driver/driver.py (Corrected Version)
 import os
 import time
 import docker
 import paramiko
 
-
-# This file is now self-contained and does not import from itself or other project files.
 
 class KaliContainer:
     def __init__(self, owner):
@@ -19,8 +17,15 @@ class KaliContainer:
             ports={"22/tcp": None},
             detach=True
         )
+
+        # --- THE FIX: Expose the container's ID as a public attribute ---
+        self.id = self._container.id
+        # Also exposing short_id for consistency
+        self.short_id = self._container.short_id
+
         self._ensure_started()
-        print(f"  [+] Container '{self._container.short_id}' created and running.")
+        # Using the new public attribute for consistency
+        print(f"  [+] Container '{self.short_id}' created and running.")
 
     def _ensure_started(self):
         self._container.reload()
@@ -36,7 +41,7 @@ class KaliContainer:
         self._container.reload()
         port_data = self._container.ports.get('22/tcp')
         if not port_data or 'HostPort' not in port_data[0]:
-            raise Exception(f"Failed to find mapped SSH port for container {self._container.id}")
+            raise Exception(f"Failed to find mapped SSH port for container {self.id}")
 
         public_port = int(port_data[0]['HostPort'])
         key_path = os.path.expanduser('~/.ssh/id_ecdsa')
@@ -67,7 +72,8 @@ class KaliContainer:
             self._ssh_client.close()
         try:
             self._container.reload()
-            print(f"\n  [+] Cleaning up container '{self._container.short_id}'...")
+            # Using the new public attribute
+            print(f"\n  [+] Cleaning up container '{self.short_id}'...")
             if self._container.status in ["running", "created"]:
                 self._container.stop()
             self._container.remove(force=True)
@@ -85,5 +91,5 @@ class KaliManager:
             print("FATAL ERROR: Could not connect to Docker. Is it running?")
             raise e
 
-    def create_container(self) -> "KaliContainer":  # Use string hint for self-reference
+    def create_container(self) -> "KaliContainer":
         return KaliContainer(owner=self)
