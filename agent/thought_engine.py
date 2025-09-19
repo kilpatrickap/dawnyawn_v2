@@ -42,7 +42,7 @@ II. STRATEGIC ANALYSIS & COMMAND RULES (HOW TO THINK)
 1.  **FOCUS ON PENDING TASKS:** Look at the strategic plan and focus only on tasks with a 'PENDING' status.
 2.  **DO NOT REPEAT SUCCESS:** NEVER repeat a command that has already been successfully executed and has completed a task.
 3.  **SELF-TERMINATING COMMANDS:** Commands MUST be self-terminating (e.g., use `ping -c 4`, not `ping`).
-4.  **CORRECT PACKAGE MANAGER:** The environment is Kali Linux. Use `apt-get`, not `yum`.
+4.  **DO NOT INSTALL ANY PACKAGE MANAGER:** 
 5.  **Learn from Failures:** If a command fails, do not repeat it. Choose a different command.
 6.  **Goal Completion:** Once all tasks in the plan are 'COMPLETED', you MUST use the `finish_mission` tool.
 
