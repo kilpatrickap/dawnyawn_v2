@@ -1,4 +1,4 @@
-# dawnyawn/agent/task_manager.py (Final Version with Plan Status Updates)
+# dawnyawn/agent/task_manager.py (Final Version with Simplified Plan Update Logic)
 import os
 import json
 import logging
@@ -37,34 +37,30 @@ class TaskManager:
                 os.remove(SESSION_FILE)
                 logging.info("Previous session file deleted. Starting a fresh mission.")
 
+    # --- THE FIX: This method now takes a simple list of IDs and updates the plan ---
     def _update_plan_status(self):
-        """Asks the ThoughtEngine to review history and mark tasks in the plan as COMPLETED."""
-        logging.info("📝 Updating plan status based on recent actions...")
-        # This is a special call to the thought engine to get its assessment
-        updated_plan = self.thought_engine.update_plan_status(self.goal, self.plan, self.mission_history)
-        if updated_plan:
-            self.plan = updated_plan
-            for task in self.plan:
-                if task.status == TaskStatus.COMPLETED:
-                    logging.info("  - Status Updated: Task %d is COMPLETED.", task.task_id)
+        """Gets completed task IDs from the AI and updates the plan state."""
+        logging.info("📝 Assessing plan progress based on recent actions...")
+        completed_ids = self.thought_engine.get_completed_task_ids(self.goal, self.plan, self.mission_history)
+
+        if not completed_ids:
+            logging.info("  - No new tasks were marked as completed.")
+            return
+
+        for task in self.plan:
+            if task.task_id in completed_ids and task.status != TaskStatus.COMPLETED:
+                task.status = TaskStatus.COMPLETED
+                logging.info("  - Status Updated: Task %d is now COMPLETED.", task.task_id)
 
     # ... ( _save_state and _load_state are unchanged) ...
     def _save_state(self):
-        """Saves the current mission goal, plan, and history to a session file."""
-        state = {
-            "goal": self.goal,
-            "plan": [task.model_dump() for task in self.plan],
-            "mission_history": self.mission_history
-        }
-        with open(SESSION_FILE, 'w', encoding='utf-8') as f:
-            json.dump(state, f, indent=4)
+        state = {"goal": self.goal, "plan": [task.model_dump() for task in self.plan],
+                 "mission_history": self.mission_history}
+        with open(SESSION_FILE, 'w', encoding='utf-8') as f: json.dump(state, f, indent=4)
         logging.info("Mission state saved to session file.")
 
     def _load_state(self):
-        """Loads mission state from the session file if it exists and matches the goal."""
-        if not os.path.exists(SESSION_FILE):
-            logging.info("No existing session file found. Starting a new mission.")
-            return False
+        if not os.path.exists(SESSION_FILE): return False
         try:
             with open(SESSION_FILE, 'r', encoding='utf-8') as f:
                 state = json.load(f)
@@ -74,10 +70,10 @@ class TaskManager:
                 return False
             self.plan = [TaskNode(**task_data) for task_data in state.get("plan", [])]
             self.mission_history = state.get("mission_history", [])
-            logging.info("Successfully loaded and resumed mission from session file.")
+            logging.info("Successfully loaded and resumed mission.")
             return True
         except (json.JSONDecodeError, TypeError) as e:
-            logging.error("Failed to load session file due to corruption. Starting fresh.", e)
+            logging.error("Failed to load session file. Starting fresh.", e)
             return False
 
     def run(self):
@@ -88,62 +84,49 @@ class TaskManager:
             try:
                 self.plan = self.scheduler.create_plan(self.goal)
                 if not self.plan:
-                    logging.error("Mission aborted: Agent failed to generate a valid plan.")
+                    logging.error("Mission aborted: Agent failed to generate a valid plan.");
                     return
                 logging.info("High-Level Plan Created:")
-                for task in self.plan:
-                    logging.info("  %d. %s", task.task_id, task.description)
+                for task in self.plan: logging.info("  %d. %s", task.task_id, task.description)
                 if input("\nProceed with this plan? (y/n): ").lower() != 'y':
-                    logging.info("Mission aborted by user.")
+                    logging.info("Mission aborted by user.");
                     return
                 self._save_state()
             except (APITimeoutError, KeyboardInterrupt) as e:
-                logging.error("Mission aborted during planning phase: %s", e)
+                logging.error("Mission aborted during planning phase: %s", e);
                 return
 
         # EXECUTION LOOP
         try:
             while True:
                 action = self.thought_engine.choose_next_action(self.goal, self.plan, self.mission_history)
-
                 if action.tool_name == "finish_mission":
-                    logging.info("AI has decided the mission is complete.")
-                    self.mission_history.append({"command": "finish_mission", "observation": action.tool_input})
+                    logging.info("AI has decided the mission is complete.");
+                    self.mission_history.append({"command": "finish_mission", "observation": action.tool_input});
                     break
 
                 filename, file_content = self.mcp_client.execute_command(action.tool_input)
-
-                if filename and file_content is not None:
+                observation = file_content or f"Command '{action.tool_input}' produced no output."
+                if filename:
                     local_filepath = os.path.join(PROJECTS_DIR, filename)
                     with open(local_filepath, 'w', encoding='utf-8') as f:
-                        f.write(file_content)
+                        f.write(observation)
                     logging.info("Observation saved to '%s'", local_filepath)
-                    observation = file_content
                 else:
-                    observation = file_content
                     logging.error("Command execution failed: %s", observation)
 
                 self.mission_history.append({"command": action.tool_input, "observation": observation})
-
-                # --- THE FIX: After an action, update the plan status ---
                 self._update_plan_status()
                 self._save_state()
 
-                if len(self.mission_history) >= 20:
-                    logging.warning("Max step limit (20) reached. Terminating mission.")
-                    break
+                if len(self.mission_history) >= 20: logging.warning("Max step limit (20) reached."); break
         except (APITimeoutError, KeyboardInterrupt) as e:
             logging.error("Mission aborted during execution loop: %s", e)
         finally:
             self._generate_final_report()
-            if os.path.exists(SESSION_FILE):
-                os.remove(SESSION_FILE)
-                logging.info("Session file cleaned up.")
+            if os.path.exists(SESSION_FILE): os.remove(SESSION_FILE); logging.info("Session file cleaned up.")
 
     def _generate_final_report(self):
-        """Generates the final mission report using the dedicated reporting module."""
         logging.info("Generating final mission report...")
-        if not self.mission_history:
-            logging.warning("No actions were taken, cannot generate a report.")
-            return
+        if not self.mission_history: logging.warning("No actions were taken, cannot generate a report."); return
         create_report(self.goal, self.mission_history)

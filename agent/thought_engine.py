@@ -1,12 +1,12 @@
-# dawnyawn/agent/thought_engine.py (Final Version with Plan Status Updates)
+# dawnyawn/agent/thought_engine.py (Final Version with Simplified Plan Update)
 import re
 import json
 import logging
-from pydantic import BaseModel, TypeAdapter
+from pydantic import BaseModel
 from pydantic_core import ValidationError
 from config import get_llm_client, LLM_MODEL_NAME, LLM_REQUEST_TIMEOUT
 from tools.tool_manager import ToolManager
-from models.task_node import TaskNode, TaskStatus
+from models.task_node import TaskNode
 from typing import List, Dict
 
 
@@ -15,23 +15,28 @@ class ToolSelection(BaseModel):
     tool_input: str
 
 
+# NEW: A Pydantic model for the simplified plan update response
+class PlanUpdate(BaseModel):
+    completed_task_ids: List[int]
+
+
 def _clean_json_response(response_str: str) -> str:
-    """Finds and extracts a JSON object/array from a string that might be wrapped in Markdown."""
-    match = re.search(r'(\[.*\]|\{.*\})', response_str, re.DOTALL)
+    """Finds and extracts a JSON object from a string that might be wrapped in Markdown."""
+    match = re.search(r'\{.*\}', response_str, re.DOTALL)
     if match:
         return match.group(0)
     return response_str
 
 
 class ThoughtEngine:
-    """AI Reasoning component. Decides the next action and updates the plan status."""
+    """AI Reasoning component. Decides the next action and assesses plan status."""
 
     def __init__(self, tool_manager: ToolManager):
         self.client = get_llm_client()
         self.tool_manager = tool_manager
-        # --- FINAL, MOST ROBUST SYSTEM PROMPT ---
+        # This system prompt for choosing actions is now very solid.
         self.system_prompt_template = f"""
-You are an EXPERT PENETRATION TESTER and command-line AI.
+You are an expert penetration tester and command-line AI. Your SOLE function is to output a single, valid JSON object that represents the next best command to execute.
 
 I. RESPONSE FORMATTING RULES (MANDATORY)
 1.  **JSON ONLY:** Your entire response MUST be a single JSON object. Do not add explanations or any other text.
@@ -42,7 +47,7 @@ II. STRATEGIC ANALYSIS & COMMAND RULES (HOW TO THINK)
 1.  **FOCUS ON PENDING TASKS:** Look at the strategic plan and focus only on tasks with a 'PENDING' status.
 2.  **DO NOT REPEAT SUCCESS:** NEVER repeat a command that has already been successfully executed and has completed a task.
 3.  **SELF-TERMINATING COMMANDS:** Commands MUST be self-terminating (e.g., use `ping -c 4`, not `ping`).
-4.  **DO NOT INSTALL ANY TOOL:** 
+4.  **DO NOT INSTALL ANY TOOL:**
 5.  **Learn from Failures:** If a command fails, do not repeat it. Choose a different command.
 6.  **Goal Completion:** Once all tasks in the plan are 'COMPLETED', you MUST use the `finish_mission` tool.
 
@@ -51,7 +56,6 @@ III. AVAILABLE TOOLS:
 """
 
     def _format_plan(self, plan: List[TaskNode]) -> str:
-        """Formats the plan into a string for the AI, showing task status."""
         if not plan: return "No plan provided."
         return "\n".join([f"  - Task {task.task_id} [{task.status}]: {task.description}" for task in plan])
 
@@ -62,7 +66,7 @@ III. AVAILABLE TOOLS:
             f"Based on the goal, plan, and history below, decide the single best command to execute next to progress on a PENDING task. Respond with a single, valid JSON object.\n\n"
             f"**Main Goal:** {goal}\n\n"
             f"**Strategic Plan:**\n{self._format_plan(plan)}\n\n"
-            f"**Execution History:**\n{json.dumps(history, indent=2)}"
+            f"**Execution History (most recent last):\n{json.dumps(history, indent=2)}"
         )
         try:
             response = self.client.chat.completions.create(
@@ -82,16 +86,16 @@ III. AVAILABLE TOOLS:
             return ToolSelection(tool_name="finish_mission",
                                  tool_input="Mission failed: The AI produced an invalid JSON response.")
 
-    def update_plan_status(self, goal: str, plan: List[TaskNode], history: List[Dict]) -> List[TaskNode]:
-        """Asks the AI to return the updated plan with new statuses."""
+    # --- THE FIX: This method is now much simpler for the AI ---
+    def get_completed_task_ids(self, goal: str, plan: List[TaskNode], history: List[Dict]) -> List[int]:
+        """Asks the AI to identify which tasks are complete based on the latest action."""
         plan_update_prompt = (
-            "You are a project manager AI. Your job is to update a plan's status. "
-            "Review the execution history and the strategic plan. Based on the output of the last command, "
-            "identify which tasks in the plan are now complete. Your response MUST be ONLY the full plan, "
-            f"returned as a JSON array, with the `status` field for any completed tasks changed to `{TaskStatus.COMPLETED}`. "
-            "Do not add any other text.\n\n"
-            f"**Execution History:**\n{json.dumps(history, indent=2)}\n\n"
-            f"**Current Plan (in JSON array format):**\n{json.dumps([task.model_dump() for task in plan], indent=2)}"
+            "You are a project manager AI. Review the strategic plan and the most recent entry in the execution history. "
+            "Identify which task IDs from the plan are now fully completed by the last action's observation. "
+            "Your response MUST be a single JSON object with one key: `\"completed_task_ids\"`, which is a list of integers. "
+            "Example: `{\"completed_task_ids\": [1, 3]}`. If no tasks were completed, return an empty list.\n\n"
+            f"**Strategic Plan:**\n{self._format_plan(plan)}\n\n"
+            f"**Most Recent Action & Observation:**\n{json.dumps(history[-1], indent=2) if history else 'No actions yet.'}"
         )
         try:
             response = self.client.chat.completions.create(
@@ -103,20 +107,8 @@ III. AVAILABLE TOOLS:
                 temperature=0.0
             )
             raw_response = response.choices[0].message.content
-            # The AI might return the list inside a key, e.g. {"plan": [...]}, so we need to find the list.
-            json_str = _clean_json_response(raw_response)
-            json_data = json.loads(json_str)
-            if isinstance(json_data, list):
-                task_list_data = json_data
-            elif isinstance(json_data, dict) and len(json_data.keys()) == 1:
-                # Try to extract the list if it's the only value in a dict
-                task_list_data = next(iter(json_data.values()))
-            else:
-                raise ValueError("JSON response is not a list or a single-key dictionary containing a list.")
-
-            # Use Pydantic's TypeAdapter for validating a list of models
-            list_of_tasks_adapter = TypeAdapter(List[TaskNode])
-            return list_of_tasks_adapter.validate_python(task_list_data)
-        except (ValidationError, json.JSONDecodeError, ValueError) as e:
-            logging.error("AI failed to update plan status with valid JSON: %s", e)
-            return None  # Return None to indicate failure
+            update = PlanUpdate.model_validate_json(_clean_json_response(raw_response))
+            return update.completed_task_ids
+        except (ValidationError, json.JSONDecodeError) as e:
+            logging.error("AI failed to identify completed tasks with valid JSON: %s", e)
+            return []  # Return an empty list on failure
